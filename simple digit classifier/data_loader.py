@@ -18,3 +18,15 @@ def load_data():
     encoded_labels[np.arange(60000),labels] = 1
 
     return encoded_labels, features
+
+def load_test_data():
+    data = pd.read_csv("./archive/mnist_test.csv")
+    data = np.array(data)
+    labels = data[:,0]
+    features = data[:,1:]
+    features = features/255.0
+
+    encoded_labels = np.zeros((10000,10))
+    encoded_labels[np.arange(10000),labels] = 1
+
+    return encoded_labels, features
