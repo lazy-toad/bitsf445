@@ -26,7 +26,7 @@ def load_test_data():
     features = data[:,1:]
     features = features/255.0
 
-    encoded_labels = np.zeros((10000,10))
-    encoded_labels[np.arange(10000),labels] = 1
+    #encoded_labels = np.zeros((10000,10))
+    #encoded_labels[np.arange(10000),labels] = 1
 
-    return encoded_labels, features
+    return labels, features
