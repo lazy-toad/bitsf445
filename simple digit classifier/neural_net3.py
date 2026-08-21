@@ -1,4 +1,5 @@
 import numpy as np
+import pandas as pd
 
 # affine fully connected layer
 
@@ -101,6 +102,285 @@ def softmax_loss(z_final, y):
     delta /= m
 
     return loss, delta
+
+
+class FullyConnectedNet:
+    def __init__(
+        self,
+        hidden_dims,
+        input_dim,
+        num_classes,
+        dropout_keep_ratio=1.0,
+        l2_lmbda=0.0,
+        seed=None,
+    ):
+        self.l2_lmbda = l2_lmbda
+        self.num_layers = len(hidden_dims) + 1
+        self.params = {}
+
+        # build full chain
+        dims = [input_dim] + list(hidden_dims) + [num_classes]
+
+        for i in range(self.num_layers):
+            fan_in, fan_out = dims[i], dims[i + 1]
+            # he init
+            self.params[f"w{i + 1}"] = (np.random.randn(fan_in, fan_out)) * np.sqrt(
+                2.0 / fan_in
+            )
+            self.params[f"b{i + 1}"] = np.zeros((1, fan_out))
+
+        self.use_dropout = dropout_keep_ratio != 1.0
+        self.dropout_param = {}
+        if self.use_dropout:
+            self.dropout_param = {"mode": "train", "p": dropout_keep_ratio}
+            if seed is not None:
+                self.dropout_param["seed"] = seed
+
+    def loss(self, a_in, y=None):
+        mode = "test" if y is None else "train"
+        if self.use_dropout:
+            self.dropout_param["mode"] = mode
+
+        # forward pass
+        a = a_in
+        caches = []
+
+        for i in range(1, self.num_layers):
+            w, b = self.params[f"w{i}"], self.params[f"b{i}"]
+            a, ar_cache = affine_relu_forward(a, w, b)
+
+            drop_cache = None
+            if self.use_dropout:
+                a, drop_cache = dropout_forward(a, self.dropout_param)
+
+            caches.append((ar_cache, drop_cache))
+
+        # final_layer
+        w_L, b_L = (
+            self.params[f"w{self.num_layers}"],
+            self.params[f"b{self.num_layers}"],
+        )
+        z_final, out_cache = affine_forward(a, w_L, b_L)
+
+        if mode == "test":
+            return z_final
+
+        # loss
+        loss, delta = softmax_loss(z_final, y)
+
+        # l2 regularization
+        loss += (
+            0.5
+            * self.l2_lmbda
+            * sum(
+                np.sum(self.params[f"w{i}"] ** 2) for i in range(1, self.num_layers + 1)
+            )
+        )
+
+        # backward
+        grads = {}
+
+        delta, dw, db = affine_backward(delta, out_cache)
+        grads[f"w{self.num_layers}"] = dw + self.l2_lmbda * w_L
+        grads[f"b{self.num_layers}"] = db
+
+        # backpropogating starting from last 2nd layer
+        for i in range(self.num_layers - 1, 0, -1):
+            ar_cache, drop_cache = caches[i - 1]
+            # at each step gotta undo dropout first (as it was applied last)
+            if self.use_dropout:
+                delta = dropout_backward(delta, drop_cache)
+
+            delta, dw, db = affine_relu_backward(delta, ar_cache)
+
+            grads[f"w{i}"] = dw + self.l2_lmbda * self.params[f"w{i}"]
+            grads[f"b{i}"] = db
+
+        return loss, grads
+
+    def predict(self, a_in):
+        z_final = self.loss(a_in)
+        z_final_array = np.array(z_final)
+        return np.argmax(z_final_array, axis=1)
+
+
+# SGD with momentum
+def sgd_momentum(w, dw, config):
+    config.setdefault("eta", 1e-12)
+    config.setdefault("momentum", 0.9)
+    v = config.get("velocity", np.zeros_like(w))
+
+    v_next = config["momentum"] * v - config["eta"] * dw
+    w_next = w + v_next
+
+    return w_next, {**config, "velocity": v_next}
+
+
+# trainer
+class Trainer:
+    def __init__(
+        self,
+        model,
+        X_train,
+        y_train,
+        X_val,
+        y_val,
+        mini_batch_size=128,
+        epochs=10,
+        eta=1e-12,
+        eta_decay=1.0,
+        momentum=0.9,
+        verbose=True,
+        print_every=100,
+    ):
+
+        self.model = model
+        self.X_train = X_train
+        self.y_train = y_train
+        self.X_val = X_val
+        self.y_val = y_val
+
+        self.mini_batch_size = mini_batch_size
+        self.epochs = epochs
+        self.eta_decay = eta_decay
+        self.verbose = verbose
+        self.print_every = print_every
+
+        self.optim_configs = {
+            p: {"eta": eta, "momentum": momentum} for p in model.params
+        }
+
+        self.loss_history = []
+        self.train_acc_history = []
+        self.val_acc_history = []
+
+        self.best_val_acc = 0.0
+        self.best_params = {}
+
+    def _step(self):
+        m = self.X_train.shape[0]
+        idx = np.random.choice(m, self.mini_batch_size, replace=False)
+        X_b = self.X_train[idx]
+        y_b = self.y_train[idx]
+
+        loss, grads = self.model.loss(X_b, y_b)
+        self.loss_history.append(loss)
+
+        for p in self.model.params:
+            w_new, cfg_new = sgd_momentum(
+                self.model.params[p], grads[p], self.optim_configs[p]
+            )
+            self.model.params[p] = w_new
+            self.optim_configs[p] = cfg_new
+
+    def check_accuracy(self, X, y, num_samples=1000):
+        m = X.shape[0]
+        if num_samples is not None and m > num_samples:
+            idx = np.random.choice(m, num_samples, replace=False)
+            X, y = X[idx], y[idx]
+        return float(np.mean(self.model.predict(X) == y))
+
+    def train(self):
+        m = self.X_train.shape[0]
+        iters_per_epoch = max(m // self.mini_batch_size, 1)
+        total_iters = self.epochs * iters_per_epoch
+
+        for t in range(total_iters):
+            self._step()
+
+            if self.verbose and t % self.print_every == 0:
+                print(f"  iter {t:5d}/{total_iters}  loss={self.loss_history[-1]:.4f}")
+
+            epoch_end = (t + 1) % iters_per_epoch == 0
+            if epoch_end:
+                epoch = (t + 1) // iters_per_epoch
+
+                for cfg in self.optim_configs.values():
+                    cfg["eta"] *= self.eta_decay
+
+                train_acc = self.check_accuracy(self.X_train, self.y_train)
+                val_acc = self.check_accuracy(self.X_val, self.y_val)
+                self.train_acc_history.append(train_acc)
+                self.val_acc_history.append(val_acc)
+
+                if self.verbose:
+                    eta_now = next(iter(self.optim_configs.values()))["eta"]
+                    print(
+                        f"Epoch {epoch:2d}/{self.epochs}  "
+                        f"eta={eta_now:.6f}  "
+                        f"train_acc={train_acc:.3f}  "
+                        f"val_acc={val_acc:.3f}"
+                    )
+
+                if val_acc > self.best_val_acc:
+                    self.best_val_acc = val_acc
+                    self.best_params = {
+                        k: v.copy() for k, v in self.model.params.items()
+                    }
+
+        self.model.params = self.best_params
+        print(f"\n✓ Done.  Best val_acc = {self.best_val_acc:.4f}")
+
+
+# final testing
+def load_kaggle_mnist():
+    print("Loading Kaggle CSVs... (this might take a few seconds)")
+
+    # 1. Load Train Data
+    train_data = pd.read_csv("./archive/mnist_train.csv").values
+    y_tr = train_data[:, 0].astype(int)  # Integer labels
+    X_tr = train_data[:, 1:].astype(np.float64)  # Pixel features
+    X_tr /= 255.0  # Normalize to [0, 1]
+
+    # 2. Load Test Data
+    test_data = pd.read_csv("./archive/mnist_test.csv").values
+    y_te = test_data[:, 0].astype(int)  # Integer labels
+    X_te = test_data[:, 1:].astype(np.float64)  # Pixel features
+    X_te /= 255.0  # Normalize to [0, 1]
+
+    # 3. Mean Centering (to prevent lopsided gradients)
+    mean = X_tr.mean(axis=0)
+    X_tr -= mean
+    X_te -= mean
+
+    return X_tr, y_tr, X_te, y_te
+
+
+if __name__ == "__main__":
+    X_tr, y_tr, X_te, y_te = load_kaggle_mnist()
+    print(f"Train: {X_tr.shape}   Test: {X_te.shape}\n")
+
+    # The rest of the setup is identical!
+    net = FullyConnectedNet(
+        input_dim=784,
+        hidden_dims=[256, 128],
+        num_classes=10,
+        dropout_keep_ratio=0.8,
+        l2_lmbda=1e-3,
+    )
+
+    trainer = Trainer(
+        model=net,
+        X_train=X_tr,
+        y_train=y_tr,
+        X_val=X_te,
+        y_val=y_te,
+        mini_batch_size=128,
+        epochs=20,
+        eta=1e-2,
+        eta_decay=0.95,
+        momentum=0.9,
+        print_every=300,
+    )
+
+    trainer.train()
+
+    preds = net.predict(X_te)
+    correct = int(np.sum(preds == y_te))
+    print(
+        f"\nFinal test accuracy: {correct}/{len(y_te)} "
+        f"= {100 * correct / len(y_te):.2f}%"
+    )
 
 
 """
