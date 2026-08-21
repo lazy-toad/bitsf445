@@ -1,3 +1,4 @@
 others/
 simple digit classifier/archive/mnist_train.csv
 simple digit classifier/archive/mnist_test.csv
+simple digit classifier/network4_notes.py
